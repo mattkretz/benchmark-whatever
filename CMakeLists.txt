@@ -37,3 +37,6 @@ MACRO(add_benchmark title)
 endmacro()
 
 add_benchmark(countif)
+add_benchmark(nearestneighbor)
+add_benchmark(nearestneighbor3d)
+add_benchmark(peakflop)

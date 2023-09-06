@@ -35,7 +35,6 @@ set logscale x 2
 set xlabel "$xlabel"
 set ylabel "$ylabel"
 ticformat(x) = x >= 1024 ? x >= 1024*1024 ? sprintf("%dM", x/1024/1024) : sprintf("%dk", x/1024) : sprintf("%d", x)
-set ytics format 
 set output "$1.pdf"
 set term pdfcairo enhanced color rounded size 20cm,20cm
 plot for [i=0:$ngroups] 'tmp.csv' index i using 2:$2:xtic(ticformat(\$2)) with linespoints title columnheader(1)
