@@ -2,160 +2,136 @@
 /* Copyright © 2023 GSI Helmholtzzentrum fuer Schwerionenforschung GmbH
  *                  Matthias Kretz <m.kretz@gsi.de>
  */
-#include <benchmark/benchmark.h>
+#include "benchmark.h"
 #include <vir/simd.h>
 #include <vir/simd_benchmarking.h>
 #include <vir/simd_cvt.h>
+#include <vir/simd_execution.h>
 
 #include <algorithm>
-#include <boost/align/aligned_allocator.hpp>
 #include <execution>
+#include <memory_resource>
 #include <ranges>
 #include <vector>
 
-#include "simd_for_each.h"
+//#include "simd_for_each.h"
 
-template <typename T>
-using simd_aligned_vector =
-    std::vector<T, boost::alignment::aligned_allocator<
-                       T, stdx::memory_alignment_v<stdx::native_simd<T>>>>;
+namespace stdx = vir::stdx;
 
-void add_columns(benchmark::State& state, std::size_t bytes_per_iteration) {
-  state.counters["throughput"] = {double(bytes_per_iteration),
-                                  benchmark::Counter::kIsIterationInvariantRate,
-                                  benchmark::Counter::kIs1024};
-}
+constexpr long smallest = 32;
+constexpr long largest = smallest << 17;
 
-void simple_count_if_O2(benchmark::State& state)
+alignas(4096) std::array<char, largest * sizeof(float) * 2> s_buffer;
+std::pmr::monotonic_buffer_resource s_memory {s_buffer.data(), s_buffer.size()};
+
+template <typename T = float>
+void
+add_columns(benchmark::State& state)
 {
-  const std::size_t n = state.range(0);
-  simd_aligned_vector<float> v(n);
-  std::generate(v.begin(), v.end(), [] { return std::rand() % 2 ? 1 : -1; });
-  for (auto _ : state) {
-    vir::fake_read(std::count_if(v.begin(), v.end(), [](float x) { return x > 0; }));
+  const double bytes_per_iteration = state.range(0) * sizeof(T);
+  state.counters["throughput / (Byte/s)"] = {double(bytes_per_iteration),
+                                        benchmark::Counter::kIsIterationInvariantRate,
+                                        benchmark::Counter::kIs1024};
+
+  if (state.counters.contains("CYCLES")) {
+    state.counters["throughput / (Bytes per cycle)"] = {
+      double(bytes_per_iteration) / state.counters["CYCLES"],
+      benchmark::Counter::kIsIterationInvariant
+    };
   }
-  add_columns(state, n * sizeof(float));
-}
 
-[[gnu::optimize("-O3")]]
-void simple_count_if_O3(benchmark::State& state)
-{
-  const std::size_t n = state.range(0);
-  simd_aligned_vector<float> v(n);
-  std::generate(v.begin(), v.end(), [] { return std::rand() % 2 ? 1 : -1; });
-  for (auto _ : state) {
-    vir::fake_read(std::count_if(v.begin(), v.end(), [](float x) { return x > 0; }));
+  if (state.counters.contains("INSTRUCTIONS")) {
+    state.counters["asm efficiency / (instructions per value)"] = {
+      double(state.range(0)) / state.counters["INSTRUCTIONS"],
+      benchmark::Counter::kIsIterationInvariant | benchmark::Counter::kInvert
+    };
   }
-  add_columns(state, n * sizeof(float));
 }
 
-void unseq_O2(benchmark::State& state)
+auto
+make_data(std::size_t n)
 {
-  const std::size_t n = state.range(0);
-  simd_aligned_vector<float> v(n);
+  s_memory.release();
+  std::pmr::vector<float> v(n, &s_memory);
   std::generate(v.begin(), v.end(), [] { return std::rand() % 2 ? 1 : -1; });
-  for (auto _ : state) {
-    vir::fake_read(std::count_if(std::execution::unseq, v.begin(), v.end(),
-                                 [](float x) { return x > 0; }));
-  }
-  add_columns(state, n * sizeof(float));
+  return v;
 }
 
-[[gnu::optimize("-O3")]]
-void unseq_O3(benchmark::State& state)
-{
-  const std::size_t n = state.range(0);
-  simd_aligned_vector<float> v(n);
-  std::generate(v.begin(), v.end(), [] { return std::rand() % 2 ? 1 : -1; });
-  for (auto _ : state) {
-    vir::fake_read(std::count_if(std::execution::unseq, v.begin(), v.end(),
-                                 [](float x) { return x > 0; }));
-  }
-  add_columns(state, n * sizeof(float));
-}
+template <auto ExecutionPolicy>
+  [[gnu::always_inline]]
+  void
+  do_benchmark(benchmark::State& state, const auto& v)
+  {
+    if (state.range(0) != v.size())
+      std::abort();
 
-void sorted(benchmark::State& state)
-{
-  const std::size_t n = state.range(0);
-  simd_aligned_vector<float> v(n);
-  std::generate(v.begin(), v.end(), [] { return std::rand() % 2 ? 1 : -1; });
-  std::sort(v.begin(), v.end());
-  for (auto _ : state) {
-    vir::fake_read(std::count_if(v.begin(), v.end(), [](float x) { return x > 0; }));
-  }
-  add_columns(state, n * sizeof(float));
-}
-
-namespace vir
-{
-template <std::ranges::contiguous_range R>
-[[gnu::noinline]] constexpr int count_if(auto pol, R const& v, auto&& fun)
-{
-  using T = std::ranges::range_value_t<R>;
-  int count = 0;
-  stdx::rebind_simd_t<int, stdx::native_simd<T>> countv = 0;
-  for_each(pol, v, [&](auto... x) {
-    if constexpr (sizeof...(x) == 1) {
-      if constexpr ((x.size(), ...) == countv.size()) {
-        ++where(vir::cvt(fun(x...)), countv);
-      } else {
-        count += popcount(fun(x...));
+    for (auto _ : state)
+      {
+        if constexpr (std::is_same_v<decltype(ExecutionPolicy), decltype(std::execution::seq)>)
+          vir::fake_read(std::count_if(v.begin(), v.end(), [](auto x) { return x > 0; }));
+        else
+          vir::fake_read(std::count_if(ExecutionPolicy, v.begin(), v.end(),
+                                       [](auto x) { return x > 0; }));
       }
-    } else {
-      ((++where(vir::cvt(fun(x)), countv)), ...);
-    }
-  });
-  return count + reduce(countv);
-}
-}  // namespace vir
-
-template <typename ExecutionPolicy>
-void simd(benchmark::State& state)
-{
-  const std::size_t n = state.range(0);
-  simd_aligned_vector<float> v(n);
-  std::generate(v.begin(), v.end(), [] { return std::rand() % 2 ? 1 : -1; });
-  for (auto _ : state) {
-    vir::fake_read(vir::count_if(ExecutionPolicy{}, v, [](auto x) { return x > 0; }));
+    add_throughput_counters<float>(state);
   }
-  add_columns(state, n * sizeof(float));
-}
 
-template <typename ExecutionPolicy>
-void simd_misaligned(benchmark::State& state)
+enum Variant
 {
-  const std::size_t n = state.range(0);
-  simd_aligned_vector<float> v(n + 3);
-  std::generate(v.begin(), v.end(), [] { return std::rand() % 2 ? 1 : -1; });
-  std::span misaligned(v.begin() + 3, v.end());
-  for (auto _ : state) {
-    vir::fake_read(
-        vir::count_if(ExecutionPolicy{}, misaligned, [](auto x) { return x > 0; }));
+  Aligned,
+  Sorted,
+  Misaligned
+};
+
+template <auto pol, Variant var = Aligned>
+  void
+  count_if_O2(benchmark::State& state)
+  {
+    if constexpr (var == Misaligned)
+      {
+        auto v = make_data(state.range(0) + 1);
+        std::span misaligned(v.begin() + 1, v.end());
+        do_benchmark<pol>(state, misaligned);
+      }
+    else
+      {
+        auto v = make_data(state.range(0));
+        if constexpr (var == Sorted)
+          std::sort(v.begin(), v.end());
+        do_benchmark<pol>(state, v);
+      }
   }
-  add_columns(state, n * sizeof(float));
+
+template <auto pol, Variant var = Aligned>
+  [[gnu::optimize("-O3"),gnu::flatten]]
+  void
+  count_if_O3(benchmark::State& state)
+  { count_if_O2<pol, var>(state); }
+
+static void
+MyRange(benchmark::internal::Benchmark* b)
+{
+  for (long i = smallest; i <= largest; i += i)
+    b->Args({i - 1});
+  for (long i = smallest; i <= largest; i += i)
+    b->Args({i});
 }
 
-constexpr std::size_t smallest = 64;
-constexpr auto largest = smallest << 19;
-
-#define MYRANGE RangeMultiplier(2)->Range(smallest, largest)
-
-BENCHMARK(simple_count_if_O2)->MYRANGE;
-BENCHMARK(simple_count_if_O3)->MYRANGE;
-BENCHMARK(unseq_O2)->MYRANGE;
-BENCHMARK(unseq_O3)->MYRANGE;
-BENCHMARK(sorted)->MYRANGE;
-BENCHMARK(simd<decltype(execution::simd)>)->MYRANGE;
-BENCHMARK(simd<decltype(execution::simd.unroll_by<4>())>)->MYRANGE;
-BENCHMARK(simd<decltype(execution::simd.unroll_by<8>())>)->MYRANGE;
-/*BENCHMARK(simd<decltype(execution::simd.prefer_aligned())>)->MYRANGE;
-BENCHMARK(simd<decltype(execution::simd.prefer_aligned().unroll_by<4>())>)->MYRANGE;
-BENCHMARK(simd<decltype(execution::simd.prefer_aligned().unroll_by<8>())>)->MYRANGE;
-BENCHMARK(simd_misaligned<decltype(execution::simd)>)->MYRANGE;
-BENCHMARK(simd_misaligned<decltype(execution::simd.unroll_by<4>())>)->MYRANGE;
-BENCHMARK(simd_misaligned<decltype(execution::simd.unroll_by<8>())>)->MYRANGE;
-BENCHMARK(simd_misaligned<decltype(execution::simd.prefer_aligned())>)->MYRANGE;
-BENCHMARK(simd_misaligned<decltype(execution::simd.prefer_aligned().unroll_by<4>())>)->MYRANGE;
-BENCHMARK(simd_misaligned<decltype(execution::simd.prefer_aligned().unroll_by<8>())>)->MYRANGE;*/
-
-BENCHMARK_MAIN();
+BENCHMARK(count_if_O2<std::execution::seq>)->Apply(MyRange);
+BENCHMARK(count_if_O3<std::execution::seq>)->Apply(MyRange);
+BENCHMARK(count_if_O2<std::execution::unseq>)->Apply(MyRange);
+BENCHMARK(count_if_O3<std::execution::unseq>)->Apply(MyRange);
+BENCHMARK(count_if_O2<std::execution::seq, Sorted>)->Apply(MyRange);
+BENCHMARK(count_if_O2<vir::execution::simd>)->Apply(MyRange);
+BENCHMARK(count_if_O2<vir::execution::simd.unroll_by<4>()>)->Apply(MyRange);
+BENCHMARK(count_if_O2<vir::execution::simd.unroll_by<8>()>)->Apply(MyRange);
+BENCHMARK(count_if_O2<vir::execution::simd.unroll_by<4>(), Misaligned>)->Apply(MyRange);
+BENCHMARK(count_if_O2<vir::execution::simd.prefer_aligned().unroll_by<4>(), Misaligned>)->Apply(MyRange);
+BENCHMARK(count_if_O2<vir::execution::simd.auto_prologue().unroll_by<4>(), Misaligned>)->Apply(MyRange);
+BENCHMARK(count_if_O2<vir::execution::simd.prefer_aligned()>)->Apply(MyRange);
+BENCHMARK(count_if_O2<vir::execution::simd.prefer_aligned().unroll_by<4>()>)->Apply(MyRange);
+BENCHMARK(count_if_O2<vir::execution::simd.prefer_aligned().unroll_by<8>()>)->Apply(MyRange);
+BENCHMARK(count_if_O2<vir::execution::simd, Misaligned>)->Apply(MyRange);
+BENCHMARK(count_if_O2<vir::execution::simd.unroll_by<8>(), Misaligned>)->Apply(MyRange);
+BENCHMARK(count_if_O2<vir::execution::simd.prefer_aligned(), Misaligned>)->Apply(MyRange);
+BENCHMARK(count_if_O2<vir::execution::simd.prefer_aligned().unroll_by<8>(), Misaligned>)->Apply(MyRange);
