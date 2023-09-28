@@ -156,17 +156,29 @@ struct TemplateWrapper {
 // element_count<T>
 template <class T> struct element_count : std::integral_constant<std::size_t, 1> {};
 
+template <typename T>
+  concept has_ic_size
+    = requires { T::size.value; } and T::size.value == T::size() and T::size() == T::size;
+
+template <typename T>
+  concept has_subscript_operator
+    = requires(const T &x) { sizeof(x[0]); };
+
 template <class T>
 requires stdx::is_simd_v<T>
 struct element_count<T> : std::integral_constant<std::size_t, T::size()> {
 };
 
-template <class T>
-requires(not stdx::is_simd_v<T> and
-         requires(const T &x) { sizeof(x[0]); }) struct element_count<T>
+template <has_ic_size T>
+  struct element_count<T> : decltype(T::size)
+  {};
+
+template <has_subscript_operator T>
+  requires (not stdx::is_simd_v<T> and not has_ic_size<T>)
+  struct element_count<T>
     : std::integral_constant<std::size_t,
-                             sizeof(T) / sizeof(std::declval<const T &>()[0])> {
-};
+                             sizeof(T) / sizeof(std::declval<const T &>()[0])>
+  {};
 
 ///////////////////////////////////////////////////////////////////////////////
 // add_*_counters
