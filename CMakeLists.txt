@@ -40,6 +40,7 @@ endmacro()
 
 add_benchmark(countif)
 add_benchmark(for_each)
+add_benchmark(image)
 add_benchmark(nearestneighbor)
 add_benchmark(nearestneighbor3d)
 add_benchmark(peakflop)
