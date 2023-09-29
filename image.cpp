@@ -1,7 +1,7 @@
 #include <execution>
 #include "benchmark.h"
-#include <../simd-prototyping/simd.h>
-#include <../simd-prototyping/simd_reductions.h>
+#include <simd.h>
+#include <simd_reductions.h>
 #include <vir/simd_benchmarking.h>
 
 struct Scalar

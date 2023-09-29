@@ -1,6 +1,5 @@
 #include "benchmark.h"
-#include <../simd-prototyping/simd.h>
-#include <vir/simd_benchmarking.h>
+#include <simd.h>
 
 namespace stdx = vir::stdx;
 

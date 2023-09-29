@@ -22,11 +22,13 @@ if(cxx_abi_header_works)
    add_definitions(-DHAVE_CXX_ABI_H)
 endif()
 
-find_path(Vir_INCLUDE_DIR "vir/simd.h")
+find_path(Vir_INCLUDE_DIR "vir/simd.h" HINTS "../vir-simd")
+
+find_path(SIMD_PROTOTYPE_INCLUDE_DIR "simd_reductions.h" HINTS "../simd-prototyping")
 
 MACRO(add_benchmark title)
     add_executable(${title} ${title}.cpp)
-    target_include_directories(${title} PRIVATE "${Vir_INCLUDE_DIR}")
+    target_include_directories(${title} PRIVATE "${Vir_INCLUDE_DIR}" "${SIMD_PROTOTYPE_INCLUDE_DIR}")
     target_compile_options(${title} PRIVATE "-std=gnu++2b;-march=native")
     set_target_properties(${title} PROPERTIES LINK_FLAGS -pthread)
     target_link_libraries(${title} benchmark::benchmark)
