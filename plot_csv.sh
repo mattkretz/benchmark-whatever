@@ -177,6 +177,7 @@ set datafile separator comma
 set logscale x 2
 set xlabel "$xlabel"
 set ylabel "$ylabel"
+set yrange [0:*]
 ticformat(x) = x >= 1024 ? x >= 1024*1024 ? sprintf("%dM", x/1024/1024) : sprintf("%dk", x/1024) : sprintf("%d", x)
 set output "$1.pdf"
 set term pdfcairo enhanced color rounded size 20cm,20cm

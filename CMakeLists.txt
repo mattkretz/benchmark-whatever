@@ -41,6 +41,7 @@ MACRO(add_benchmark title)
 endmacro()
 
 add_benchmark(countif)
+add_benchmark(find)
 add_benchmark(for_each)
 add_benchmark(image)
 add_benchmark(nearestneighbor)
